@@ -26,6 +26,12 @@ NoPonto is a sophisticated desktop time tracking application built with Tauri 2.
 - `cargo check` - Check Rust code compilation (run from `src-tauri/` directory)
 - `cargo build` - Build Rust backend (run from `src-tauri/` directory)
 
+### Icon Management
+- `npm run tauri icon public/app-icon.svg` - Generate all required icon sizes and formats from the source SVG
+  - Creates Windows Store logos, ICO, ICNS, PNG files in all required sizes
+  - Generates Android and iOS app icons automatically
+  - Source icon must be square (1:1 aspect ratio) for proper generation
+
 ## Project Structure & File Organization
 
 ### Root Directory
