@@ -12,7 +12,7 @@ import {
   IconButton
 } from '@mui/material';
 import { TransitionProps } from '@mui/material/transitions';
-import { Work, Schedule, Close } from '@mui/icons-material';
+import { Work, Schedule, Close, Error } from '@mui/icons-material';
 
 const Transition = React.forwardRef(function Transition(
   props: TransitionProps & {
@@ -28,7 +28,7 @@ interface CustomNotificationProps {
   onClose: () => void;
   title: string;
   message: string;
-  type: 'success' | 'warning' | 'info';
+  type: 'success' | 'warning' | 'info' | 'error';
 }
 
 const CustomNotification: React.FC<CustomNotificationProps> = ({
@@ -102,6 +102,8 @@ const CustomNotification: React.FC<CustomNotificationProps> = ({
         return <Work sx={{ fontSize: 40, color: '#4caf50' }} />;
       case 'warning':
         return <Schedule sx={{ fontSize: 40, color: '#ff9800' }} />;
+      case 'error':
+        return <Error sx={{ fontSize: 40, color: '#f44336' }} />;
       default:
         return <Schedule sx={{ fontSize: 40, color: '#2196f3' }} />;
     }
@@ -113,6 +115,8 @@ const CustomNotification: React.FC<CustomNotificationProps> = ({
         return '#4caf50';
       case 'warning':
         return '#ff9800';
+      case 'error':
+        return '#f44336';
       default:
         return '#2196f3';
     }

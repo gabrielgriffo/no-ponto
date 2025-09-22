@@ -5,7 +5,8 @@
       "Bash(npm run build:*)",
       "Bash(npm run tauri:*)",
       "Bash(npx tsc:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(tsc --noEmit)"
     ],
     "deny": [],
     "ask": []

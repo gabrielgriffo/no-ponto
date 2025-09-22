@@ -15,15 +15,17 @@ import {
   Stack,
   Accordion,
   AccordionSummary,
-  AccordionDetails
+  AccordionDetails,
+  IconButton
 } from '@mui/material';
-import { Schedule, AccessTime, Work, NotificationsActive, ExpandMore } from '@mui/icons-material';
+import { Schedule, AccessTime, Work, NotificationsActive, ExpandMore, Settings as SettingsIcon, Download } from '@mui/icons-material';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { Store } from '@tauri-apps/plugin-store';
 import { isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification';
 import { format, differenceInMinutes, parse, addHours } from 'date-fns';
 import CustomNotification from './components/CustomNotification';
+import Settings from './components/Settings';
 
 // Extend window object for Tauri
 declare global {
@@ -190,7 +192,7 @@ function App() {
     open: boolean;
     title: string;
     message: string;
-    type: 'success' | 'warning' | 'info';
+    type: 'success' | 'warning' | 'info' | 'error';
   }>({
     open: false,
     title: '',
@@ -198,6 +200,8 @@ function App() {
     type: 'info'
   });
   const [isMonitoring, setIsMonitoring] = useState<boolean>(false);
+  const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
+  const [isLoadingHours, setIsLoadingHours] = useState<boolean>(false);
   
   // Validação da sequência de horários
   const validation = validateTimeSequence(timeData);
@@ -482,6 +486,83 @@ function App() {
     }
   };
 
+  const handleFetchHours = async () => {
+    if (isMonitoring) {
+      setNotification({
+        open: true,
+        title: '⚠️ Monitoramento Ativo',
+        message: 'Pare o monitoramento antes de importar novos horários.',
+        type: 'warning'
+      });
+      return;
+    }
+
+    setIsLoadingHours(true);
+    setNotification({ open: false, title: '', message: '', type: 'info' });
+
+    try {
+      const hours = await invoke<string[]>('fetch_pontomais_hours');
+
+      if (hours.length === 0) {
+        setNotification({
+          open: true,
+          title: '📋 Nenhum Registro',
+          message: 'Não foram encontrados registros de ponto para hoje.',
+          type: 'info'
+        });
+        return;
+      }
+
+      if (hours.length >= 4) {
+        setNotification({
+          open: true,
+          title: '⚠️ Muitos Registros',
+          message: `Foram encontrados ${hours.length} registros. Já foram feitos 4 ou mais registros de ponto hoje.`,
+          type: 'warning'
+        });
+        return;
+      }
+
+      // Preencher os campos baseado na quantidade de horários
+      const newTimeData = { ...timeData };
+
+      if (hours.length >= 1) {
+        newTimeData.inicio1 = hours[0];
+      }
+      if (hours.length >= 2) {
+        newTimeData.fim1 = hours[1];
+      }
+      if (hours.length >= 3) {
+        newTimeData.inicio2 = hours[2];
+      }
+
+      setTimeData(newTimeData);
+
+      // Salvar no store
+      if (store) {
+        store.set('timeData', newTimeData);
+      }
+
+      setNotification({
+        open: true,
+        title: '✅ Horários Importados',
+        message: `${hours.length} horário(s) foram importados com sucesso do PontoMais.`,
+        type: 'success'
+      });
+
+    } catch (error) {
+      console.error('Error fetching hours:', error);
+      setNotification({
+        open: true,
+        title: '❌ Erro na Importação',
+        message: typeof error === 'string' ? error : 'Erro ao buscar horários do PontoMais.',
+        type: 'error'
+      });
+    } finally {
+      setIsLoadingHours(false);
+    }
+  };
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
@@ -526,13 +607,29 @@ function App() {
       }}>
         <Container maxWidth={false} sx={{ width: '580px', margin: '0 auto' }}>
           {/* Header */}
-          <Box sx={{ textAlign: 'center', mb: 2 }}>
-            <Typography 
-              variant="h4" 
-              component="h1" 
-              sx={{ 
-                display: 'flex', 
-                alignItems: 'center', 
+          <Box sx={{ textAlign: 'center', mb: 2, position: 'relative' }}>
+            <Box sx={{ position: 'absolute', top: 0, right: 0 }}>
+              <IconButton
+                onClick={() => setSettingsOpen(true)}
+                sx={{
+                  color: 'primary.main',
+                  '&:hover': {
+                    backgroundColor: 'primary.light',
+                    color: 'white'
+                  }
+                }}
+                aria-label="Configurações"
+              >
+                <SettingsIcon />
+              </IconButton>
+            </Box>
+
+            <Typography
+              variant="h4"
+              component="h1"
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
                 justifyContent: 'center',
                 gap: 1,
                 mb: 1,
@@ -659,7 +756,18 @@ function App() {
                 >
                   {isMonitoring ? 'Desativar Monitoramento' : 'Iniciar Monitoramento'}
                 </Button>
-                
+
+                <Button
+                  variant="outlined"
+                  onClick={handleFetchHours}
+                  disabled={isLoadingHours || isMonitoring}
+                  startIcon={<Download />}
+                  color="info"
+                  sx={{ minWidth: 160, width: '250px' }}
+                >
+                  {isLoadingHours ? 'Buscando...' : 'Importar do PontoMais'}
+                </Button>
+
                 <Button
                   variant="outlined"
                   onClick={handleTestNotification}
@@ -817,6 +925,11 @@ function App() {
         title={notification.title}
         message={notification.message}
         type={notification.type}
+      />
+
+      <Settings
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
       />
     </ThemeProvider>
   );

@@ -7,6 +7,11 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tokio::time::{sleep, Duration};
 use chrono::{DateTime, Local, NaiveTime, TimeZone};
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use aes_gcm::aead::{Aead, OsRng, rand_core::RngCore};
+use base64::{Engine as _, engine::general_purpose};
+use tauri_plugin_store::StoreExt;
+use reqwest::Client;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TimeData {
@@ -521,6 +526,258 @@ async fn close_overlay_notification(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// Constante para a chave de criptografia (em produção, deve vir de configuração segura)
+const ENCRYPTION_KEY: &[u8; 32] = b"NoPonto2024SecureKey1234567890AB";
+
+fn encrypt_data(data: &str) -> Result<String, String> {
+    let cipher = Aes256Gcm::new_from_slice(ENCRYPTION_KEY)
+        .map_err(|e| format!("Failed to create cipher: {}", e))?;
+
+    let mut nonce_bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext = cipher.encrypt(nonce, data.as_bytes())
+        .map_err(|e| format!("Encryption failed: {}", e))?;
+
+    let mut result = nonce_bytes.to_vec();
+    result.extend(ciphertext);
+
+    Ok(general_purpose::STANDARD.encode(result))
+}
+
+fn decrypt_data(encrypted_data: &str) -> Result<String, String> {
+    let data = general_purpose::STANDARD.decode(encrypted_data)
+        .map_err(|e| format!("Base64 decode failed: {}", e))?;
+
+    if data.len() < 12 {
+        return Err("Invalid encrypted data".to_string());
+    }
+
+    let (nonce_bytes, ciphertext) = data.split_at(12);
+    let nonce = Nonce::from_slice(nonce_bytes);
+
+    let cipher = Aes256Gcm::new_from_slice(ENCRYPTION_KEY)
+        .map_err(|e| format!("Failed to create cipher: {}", e))?;
+
+    let plaintext = cipher.decrypt(nonce, ciphertext)
+        .map_err(|e| format!("Decryption failed: {}", e))?;
+
+    String::from_utf8(plaintext)
+        .map_err(|e| format!("UTF-8 conversion failed: {}", e))
+}
+
+#[tauri::command]
+async fn save_pontomais_config(app: AppHandle, config: String) -> Result<(), String> {
+    let encrypted_config = encrypt_data(&config)?;
+
+    let store = app.store("noponto.dat")
+        .map_err(|e| format!("Failed to get store: {}", e))?;
+
+    store.set("pontomais_config", serde_json::Value::String(encrypted_config.clone()));
+
+    store.save()
+        .map_err(|e| format!("Failed to save store: {}", e))?;
+
+    println!("PontoMais config saved successfully");
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_pontomais_config(app: AppHandle) -> Result<String, String> {
+    let store = app.store("noponto.dat")
+        .map_err(|e| format!("Failed to get store: {}", e))?;
+
+    if let Some(encrypted_config) = store.get("pontomais_config") {
+        if let Some(encrypted_str) = encrypted_config.as_str() {
+            let decrypted_config = decrypt_data(encrypted_str)?;
+            return Ok(decrypted_config);
+        }
+    }
+
+    Ok("".to_string())
+}
+
+#[tauri::command]
+async fn test_pontomais_api(config: String) -> Result<String, String> {
+    let config_data: serde_json::Value = serde_json::from_str(&config)
+        .map_err(|e| format!("Invalid config JSON: {}", e))?;
+
+    let employee_id = config_data["employeeId"].as_str()
+        .ok_or("Missing employeeId")?;
+    let access_token = config_data["accessToken"].as_str()
+        .ok_or("Missing accessToken")?;
+    let client = config_data["client"].as_str()
+        .ok_or("Missing client")?;
+    let uid = config_data["uid"].as_str()
+        .ok_or("Missing uid")?;
+    let uuid = config_data["uuid"].as_str()
+        .ok_or("Missing uuid")?;
+
+    // Obter data atual no formato YYYY-MM-DD
+    let today = Local::now().format("%Y-%m-%d").to_string();
+
+    let url = format!(
+        "https://api.pontomais.com.br/api/time_cards/work_days?employee_id={}&start_date={}&end_date={}&attributes=time_cards",
+        employee_id, today, today
+    );
+
+    let client_http = Client::new();
+
+    let response = client_http
+        .get(&url)
+        .header("accept", "application/json, text/plain, */*")
+        .header("accept-language", "en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7")
+        .header("access-token", access_token)
+        .header("api-version", "2")
+        .header("client", client)
+        .header("content-type", "application/json")
+        .header("dnt", "1")
+        .header("origin", "https://app2.pontomais.com.br")
+        .header("priority", "u=1, i")
+        .header("referer", "https://app2.pontomais.com.br/")
+        .header("sec-ch-ua", r#""Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140""#)
+        .header("sec-ch-ua-mobile", "?0")
+        .header("sec-ch-ua-platform", r#""Windows""#)
+        .header("sec-fetch-dest", "empty")
+        .header("sec-fetch-mode", "cors")
+        .header("sec-fetch-site", "same-site")
+        .header("token", access_token)
+        .header("uid", uid)
+        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
+        .header("uuid", uuid)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    let status = response.status();
+    let response_text = response.text().await
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    println!("=== TESTE DA API PONTOMAIS ===");
+    println!("URL: {}", url);
+    println!("Status: {}", status);
+    println!("Response: {}", response_text);
+    println!("==============================");
+
+    if status.is_success() {
+        Ok(response_text)
+    } else {
+        Err(format!("API request failed with status {}: {}", status, response_text))
+    }
+}
+
+#[tauri::command]
+async fn stop_work_monitoring() -> Result<(), String> {
+    println!("Stopping work monitoring");
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TimeCardResponse {
+    work_days: Vec<WorkDay>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WorkDay {
+    time_cards: Vec<TimeCard>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TimeCard {
+    time: String,
+}
+
+#[tauri::command]
+async fn fetch_pontomais_hours(app: AppHandle) -> Result<Vec<String>, String> {
+    // Buscar configurações salvas
+    let config_json = get_pontomais_config(app).await?;
+
+    if config_json.is_empty() {
+        return Err("Configurações do PontoMais não encontradas. Configure primeiro na tela de configurações.".to_string());
+    }
+
+    let config_data: serde_json::Value = serde_json::from_str(&config_json)
+        .map_err(|e| format!("Invalid config JSON: {}", e))?;
+
+    let employee_id = config_data["employeeId"].as_str()
+        .ok_or("Missing employeeId")?;
+    let access_token = config_data["accessToken"].as_str()
+        .ok_or("Missing accessToken")?;
+    let client = config_data["client"].as_str()
+        .ok_or("Missing client")?;
+    let uid = config_data["uid"].as_str()
+        .ok_or("Missing uid")?;
+    let uuid = config_data["uuid"].as_str()
+        .ok_or("Missing uuid")?;
+
+    // Obter data atual no formato YYYY-MM-DD
+    let today = Local::now().format("%Y-%m-%d").to_string();
+
+    let url = format!(
+        "https://api.pontomais.com.br/api/time_cards/work_days?employee_id={}&start_date={}&end_date={}&attributes=time_cards",
+        employee_id, today, today
+    );
+
+    let client_http = Client::new();
+
+    let response = client_http
+        .get(&url)
+        .header("accept", "application/json, text/plain, */*")
+        .header("accept-language", "en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7")
+        .header("access-token", access_token)
+        .header("api-version", "2")
+        .header("client", client)
+        .header("content-type", "application/json")
+        .header("dnt", "1")
+        .header("origin", "https://app2.pontomais.com.br")
+        .header("priority", "u=1, i")
+        .header("referer", "https://app2.pontomais.com.br/")
+        .header("sec-ch-ua", r#""Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140""#)
+        .header("sec-ch-ua-mobile", "?0")
+        .header("sec-ch-ua-platform", r#""Windows""#)
+        .header("sec-fetch-dest", "empty")
+        .header("sec-fetch-mode", "cors")
+        .header("sec-fetch-site", "same-site")
+        .header("token", access_token)
+        .header("uid", uid)
+        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
+        .header("uuid", uuid)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    let status = response.status();
+    let response_text = response.text().await
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    if !status.is_success() {
+        return Err(format!("API request failed with status {}: {}", status, response_text));
+    }
+
+    // Parse da resposta JSON
+    let time_card_response: TimeCardResponse = serde_json::from_str(&response_text)
+        .map_err(|e| format!("Failed to parse JSON response: {}", e))?;
+
+    // Extrair os horários
+    let mut times = Vec::new();
+
+    if let Some(work_day) = time_card_response.work_days.first() {
+        for time_card in &work_day.time_cards {
+            times.push(time_card.time.clone());
+        }
+    }
+
+    println!("=== HORÁRIOS ENCONTRADOS ===");
+    println!("Total de registros: {}", times.len());
+    for (i, time) in times.iter().enumerate() {
+        println!("Registro {}: {}", i + 1, time);
+    }
+    println!("===========================");
+
+    Ok(times)
+}
+
 
 fn create_system_tray(app: &AppHandle) -> tauri::Result<()> {
     let quit_i = MenuItem::with_id(app, "quit", "Sair", true, None::<&str>)?;
@@ -579,12 +836,17 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             start_work_monitoring,
+            stop_work_monitoring,
             get_work_status,
             notify_work_complete,
             start_monitoring,
             show_system_notification,
             show_overlay_notification,
-            close_overlay_notification
+            close_overlay_notification,
+            save_pontomais_config,
+            get_pontomais_config,
+            test_pontomais_api,
+            fetch_pontomais_hours
         ])
         .setup(|app| {
             // Create system tray
